@@ -1,0 +1,115 @@
+---
+title: "Crash Analysis Around Crosswalk Removal"
+author: Benedict Leonardi
+format: html
+---
+
+## Overview
+
+After nearly getting hit a few times walking the area around historic Newport, KY, I was indignant enough to call local officials and try to understand what was going on.
+
+This analysis evaluates changes in crash frequency following the removal of a crosswalk due to an accident which took out a pole which lit the intersection. The city of Newport, KY wisely and totally unsurpisingly decided that if a car lost control because there a road was overbuilt, the solution is to remove anything that would slow drivers in the future. The data use is pulled from [KYTC public data](http://crashinformationky.org/AdvancedSearch), filtered to (first) the City of Newport, then to a small bounding box around the affected intersection.
+
+We use a Poisson regression to model monthly crash counts as a function of time, citywide crash activity, and whether the crash occurred *after* crosswalk removal.
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(sf)
+library(lubridate)
+
+# Load and clean data
+all_crashes_df <- read_csv("all_crashes.csv") %>%
+  mutate(collision_date = mdy_hms(collisiondate)) %>%
+  mutate(
+    collision_hr = str_extract(collisiontime, "[0-9]{2}"),
+    collision_min = str_extract(collisiontime, "[0-9]{2}$")
+    # collision_date = date(collisiondate)
+  )
+
+# Convert to spatial data
+all_crashes_sf <- all_crashes_df %>%
+  filter(!is.na(latitude) & !is.na(longitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+# Define area of interest (intersection)
+bbox <- st_bbox(c(xmin = -84.493340, ymin = 39.096533,
+                  xmax = -84.490958, ymax = 39.098398), crs = 4326)
+```
+
+## Visualization
+
+```{r}
+tmp_sf <- all_crashes_sf %>%
+    st_filter(st_as_sfc(bbox)) %>%
+    mutate(after_remove_xwalk = collision_date > ymd("2022-11-01"))
+mapview::mapview(tmp_sf, zcol = "after_remove_xwalk")
+```
+
+## Modeling
+
+```{r}
+run_model <- function(date_threshold) {
+  all_crashes_sf_filtered <- all_crashes_sf %>%
+    st_filter(st_as_sfc(bbox)) %>%
+    mutate(after_remove_xwalk = collision_date > ymd(date_threshold))
+  
+  crash_counts <- all_crashes_sf_filtered %>%
+    st_drop_geometry() %>%
+    mutate(month = floor_date(collision_date, "month")) %>%
+    group_by(month, after_remove_xwalk) %>%
+    summarise(crash_count = n(), .groups = "drop") %>%
+    arrange(month) %>%
+    mutate(month_index = as.numeric(difftime(month, min(month), units = "weeks")) / 4.345)
+  
+  citywide_counts <- all_crashes_sf %>%
+    st_drop_geometry() %>%
+    mutate(month = floor_date(collision_date, "month")) %>%
+    group_by(month) %>%
+    summarise(city_crash_count = n(), .groups = "drop")
+  
+  crash_counts <- crash_counts %>%
+    left_join(citywide_counts, by = "month")
+  
+  glm(crash_count ~ after_remove_xwalk + month_index + log(city_crash_count),
+      family = poisson(), data = crash_counts) %>% summary()
+}
+
+run_model("2022-11-01")
+run_model("2024-02-01")
+```
+
+## Results
+
+Because Google Maps streetview information was hard to come by and I could not pinpoint which accident in particular took out the pole necesarry to support the crosswalk overhead signal, I used a few dates:
+
+### Crosswalk Removed: Nov 2022
+
+```         
+Coefficient: after_remove_xwalk = 0.31
+
+Interpretation: exp(0.31) ≈ 1.36
+
+Conclusion: ~36% increase in crashes after removal.
+```
+
+### Crosswalk Removed: Feb 2024
+
+```         
+Coefficient: after_remove_xwalk = 0.50
+
+Interpretation: exp(0.50) ≈ 1.64
+
+Conclusion: ~64% increase in crashes after removal.
+```
+
+### Notes
+
+```         
+All results are statistically significant (p < 0.001).
+
+The magnitude of estimated increase varies depending on the assumed removal date.
+
+Monthly time trend and citywide crash volume are controlled in the model.
+```
