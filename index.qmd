@@ -1,7 +1,9 @@
 ---
 title: "Crash Analysis Around Crosswalk Removal"
-author: Benedict Leonardi
-format: html
+author: "Benedict Leonardi"
+execute:
+  eval: false
+  echo: true
 ---
 
 ## Overview
